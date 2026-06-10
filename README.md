@@ -1,4 +1,3 @@
-cat README.md
 # sptrader
 
 Indicator-permutation backtesting & strategy-search toolkit for the S&P 500
