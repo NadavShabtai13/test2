@@ -16,7 +16,7 @@ repo to any server with Docker and the same commands work.
 
 | Stage      | What it does                                                                   | Resumable?                            |
 | ---------- | ------------------------------------------------------------------------------ | ------------------------------------- |
-| `ingest`   | Pull Yahoo OHLCV (default 60 days, 1h candles; 2h optional), store in Postgres | yes (idempotent upsert + checkpoints) |
+| `ingest`   | Pull Yahoo OHLCV (default 720 days, 1h candles; 2h optional), store in Postgres | yes (idempotent upsert + checkpoints) |
 | `optimize` | Permute cross-category indicator strategies, backtest IS/OOS, store results    | yes (skips already-tested signatures) |
 | `web`      | Dashboard: strategies above a success-rate threshold, with their indicators    | live (reads the DB)                   |
 
@@ -29,12 +29,12 @@ interrupted build or run continues exactly where it stopped (`Ctrl-C` safe).
 ```
  env / .env ─▶ ingest ─▶ Postgres(candles) ─▶ optimize ─▶ Postgres(results) ─▶ web / report
                                                   │
-                                       2 worker processes (parallel)
+                                       3 worker processes (parallel)
 ```
 
 **0. Config.** Everything is driven by env vars (`.env` or `-e` on the command).
-Key knobs: `SYMBOL`, `LOOKBACK_DAYS`, `BASE_INTERVAL`/`TARGET_INTERVAL`,
-`COST_BPS`, `TRAIN_FRACTION`, `WORKERS`. See `sptrader/config.py`.
+Key knobs: `SYMBOL`, `LOOKBACK_DAYS` (default **720** ≈ 2 years), `BASE_INTERVAL`/`TARGET_INTERVAL`,
+`COST_BPS`, `TRAIN_FRACTION`, `WORKERS` (default **3**). See `sptrader/config.py`.
 
 **1. Ingest** (`sptrader/data/ingest.py`)
 
@@ -53,7 +53,7 @@ Key knobs: `SYMBOL`, `LOOKBACK_DAYS`, `BASE_INTERVAL`/`TARGET_INTERVAL`,
   deterministic order. A spec = a set of indicator instances + a direction mode
    (`long_only`/`long_short`) + combine logic (`and`/`or`) + optional ADX gate.
 2. **Distribute**: specs are streamed in batches to `WORKERS` worker processes
-  (default 2). Each worker holds the candle frame once and caches each
+  (default 3). Each worker holds the candle frame once and caches each
    indicator's vote series, so indicators are computed once, not per strategy.
 3. **Backtest each** (`backtest/engine.py`): build a target position per bar,
   trade it on the *next* bar (`shift(1)`, no look-ahead), P&L close-to-close,
@@ -92,7 +92,7 @@ cp .env.example .env
 # 2. start the database
 docker compose up -d postgres
 
-# 3. pull market data into Postgres
+# 3. pull market data into Postgres (~2 years of 1h bars)
 docker compose run --rm app ingest
 
 # 4. run (or resume) the strategy search
@@ -104,6 +104,57 @@ docker compose up -d app
 
 Re-running `optimize` after a stop **resumes**; it never re-tests a permutation
 already in the database.
+
+## What to run right now
+
+Use this sequence after pulling the latest code (or upgrading from an older
+60-day / smaller-grid setup). **You do not need to wipe the database.**
+
+```bash
+# 1. Stop any optimize that is still running (Ctrl-C in that terminal).
+
+# 2. Rebuild the app image so it picks up code changes
+docker compose build app
+
+# 3. Start Postgres if it is not already up
+docker compose up -d postgres
+
+# 4. Re-ingest — upserts ~720 days of 1h candles (adds history, updates overlap)
+docker compose run --rm app ingest
+
+# 5. Full exhaustive search from scratch on the new data + new signal logic
+docker compose run --rm app optimize --full --restart
+
+# 6. Dashboard (separate terminal)
+docker compose up -d app
+# open http://localhost:8000
+```
+
+**Why `--restart`?** Each optimization run is keyed by a hash of the search
+config *and* the candle fingerprint (bar count + date range). Re-ingesting 720
+days creates a **new** run automatically. `--restart` is still required if you
+already started a 720-day run **before** the latest signal/grid fixes — without
+it, the cursor would resume mid-run and mix old and new backtest logic.
+
+**What happens to old data?**
+
+| What | Action |
+| ---- | ------ |
+| `candles` table | Kept. `ingest` upserts; no volume delete needed. |
+| Old optimization runs (e.g. 60-day window) | Kept in the DB for reference; ignored by a new run with a different fingerprint. |
+| In-progress run on the *same* fingerprint | `--restart` deletes that run + its results and starts at combo 0. |
+
+Check progress anytime:
+
+```bash
+docker compose run --rm app status
+```
+
+For a smaller/faster smoke test before `--full`:
+
+```bash
+docker compose run --rm app optimize --dense --max-combo-size 2 --restart
+```
 
 ## The dashboard
 
@@ -132,13 +183,13 @@ docker compose run --rm -e SYMBOL=QQQ app ingest
 docker compose run --rm -e SYMBOL=QQQ app optimize
 ```
 
-Other useful env vars (see `.env.example`): `LOOKBACK_DAYS` (use `720` for the
-full Yahoo intraday history — recommended for serious results), `COST_BPS`
-(per-side transaction cost), `TRAIN_FRACTION` (IS/OOS split).
+Other useful env vars (see `.env.example`): `LOOKBACK_DAYS` (default `720`, Yahoo
+1h cap ~730 days), `WORKERS` (default `3`), `COST_BPS` (per-side transaction
+cost), `TRAIN_FRACTION` (IS/OOS split).
 
 ## Search size & exhaustive mode
 
-The search runs in parallel worker processes (default **2**, via `WORKERS`) and
+The search runs in parallel worker processes (default **3**, via `WORKERS`) and
 the container is capped at **2 GB RAM** (`mem_limit` in compose). Specs are
 streamed lazily, so even the exhaustive space stays within the cap.
 
@@ -149,13 +200,17 @@ docker compose run --rm app optimize --full --dry-run
 ```
 
 
-| Flags                                                | Strategies | ~ETA (2 workers) |
+| Flags                                                | Strategies | ~ETA (3 workers) |
 | ---------------------------------------------------- | ---------- | ---------------- |
 | *(default)*                                          | ~16k       | < 1 min          |
-| `--dense` (rich param grids, cross-category)         | ~1.25M     | ~50 min          |
-| `--dense --all-combos` (incl. same-category)         | ~6.3M      | ~4.4 h           |
-| `--full` (all indicators, dense, all combos, AND+OR) | ~12.7M     | ~8.8 h           |
-| `--full --max-combo-size 2`                          | ~143k      | ~6 min           |
+| `--dense` (rich param grids, cross-category)         | ~1.25M+    | ~35 min          |
+| `--dense --all-combos` (incl. same-category)         | ~6.3M+     | ~3 h             |
+| `--full` (all indicators, dense, all combos, AND+OR) | ~12.7M+    | ~6 h             |
+| `--full --max-combo-size 2`                          | ~143k+     | ~4 min           |
+
+Counts marked `+` grew with the 1h-tuned `DENSE_GRIDS` (institutional MAs,
+short RSI periods, volume smoothing, expanded Ichimoku/TSI grids). Exact totals:
+`optimize --full --dry-run`.
 
 
 Exhaustive flags:
@@ -168,7 +223,9 @@ Exhaustive flags:
 - `--workers N` — parallel processes (or set `WORKERS` env).
 
 `--full` is checkpointed and resumable: stop it (`Ctrl-C` / container restart)
-and re-run the same command to continue from the cursor.
+and re-run the **same** command to continue from the cursor. After **code or
+grid changes**, or when switching lookback windows on an in-progress run, add
+`--restart` so results are not mixed.
 
 ## Other commands
 
@@ -178,9 +235,9 @@ docker compose run --rm app report --min-win-rate 0.7  # top strategies in the t
 docker compose run --rm app optimize --max-combo-size 2 --modes long_only
 docker compose run --rm app optimize --adx-filters 25  # ADX-gated variants
 
-# exhaustive overnight run on 2 years of data, 2 workers, 2 GB cap:
-docker compose run --rm -e LOOKBACK_DAYS=720 app ingest
-docker compose run --rm -e LOOKBACK_DAYS=720 app optimize --full
+# exhaustive overnight run (720-day default, 3 workers, 2 GB cap):
+docker compose run --rm app ingest
+docker compose run --rm app optimize --full --restart
 ```
 
 In the dashboard, click any row to expand the **trade detail**: number of
@@ -191,7 +248,7 @@ the full list of indicators (with parameters and category) and the combine logic
 Run the test suite inside the container:
 
 ```bash
-docker compose run --rm --entrypoint pytest app -q
+docker compose run --rm --entrypoint python app -m pytest tests/ -q
 ```
 
 ## Indicator catalog
@@ -201,6 +258,27 @@ Each emits a per-bar vote in `{-1, 0, +1}`. Implementations are pure
 pandas/numpy in `sptrader/indicators/library.py`; the signal wrappers and their
 default (sparse) parameter grids are in `sptrader/signals.py`. The dense grids
 used by `--full` / `--dense` live in `signals.DENSE_GRIDS`.
+
+**1h / SPY tuning (dense grids).** The default target is 1h candles on a US
+equity ETF (~7 RTH bars per day). Dense grids extend beyond daily-chart
+defaults where it matters:
+
+- **Trend** — slow MA periods include institutional dailies mapped to hours
+  (e.g. 350 ≈ 50 days, 1400 ≈ 200 days).
+- **Momentum** — short RSI / Stochastic periods (2, 4, 7) for intraday
+  mean-reversion; `lower` down to 10 for RSI-2-style setups.
+- **Volume** — CMF / OBV / A/D smoothing at 50–100 bars to reduce open/close
+  volume spikes.
+- **Volatility** — Bollinger `num_std` up to 3.0; Ichimoku / TSI grids
+  expanded for hourly bars.
+
+**Session VWAP.** `vwap_trend` uses a **daily-reset** VWAP (cumulative within
+each US trading day in `America/New_York`), not a rolling lifetime average.
+
+**Breakout causality.** `bollinger_breakout`, `keltner_breakout`, and
+`donchian_breakout` compare the current close to the **previous bar's**
+channel edge (`shift(1)`), so the band is not contaminated by the same bar's
+close.
 
 Signal *type* legend: **regime** = holds +1/−1 with the trend; **mean-rev** =
 buys oversold, exits at the mid/overbought; **breakout** = goes with a channel
@@ -258,7 +336,7 @@ break; **sign** = sign of the indicator vs its zero/centre line.
 | `obv_trend`        | On-Balance Volume         | sign     | +1 when OBV > its SMA               | period 20        |
 | `cmf_sign`         | Chaikin Money Flow        | sign     | sign of CMF                         | period 20        |
 | `mfi_meanrev`      | Money Flow Index          | mean-rev | long when MFI < lower, exit > upper | period 14, 20/80 |
-| `vwap_trend`       | VWAP                      | sign     | +1 when close > VWAP                | —                |
+| `vwap_trend`       | VWAP (session, daily reset) | sign   | +1 when close > session VWAP        | —                |
 | `ad_trend`         | Accumulation/Distribution | sign     | +1 when A/D > its SMA               | period 20        |
 | `force_index_sign` | Force Index               | sign     | sign of Force Index                 | period 13        |
 | `eom_sign`         | Ease of Movement          | sign     | sign of EoM                         | period 14        |
@@ -268,6 +346,12 @@ break; **sign** = sign of the indicator vs its zero/centre line.
 > indicators from *different* categories (e.g. trend + momentum + volume),
 > because stacking same-category indicators is redundant. `--full` drops that
 > restriction and tries every combination. See `RESEARCH.md` for the reasoning.
+
+> **OR + short momentum on 1h.** With `combine = or`, a single fast RSI /
+> Stochastic flip can force entries while slower trend votes stay flat — high
+> trade count and `COST_BPS` drag. When filtering the dashboard, prefer
+> strategies with reasonable `num_trades` and solid OOS stats, not just IS win
+> rate.
 
 ## Phase 2: live / paper trading (Interactive Brokers)
 
@@ -359,9 +443,10 @@ Risk controls (env / `.env`): `LIVE_ORDER_QTY`, `LIVE_MAX_POSITION`,
 `IBKR_PORT`, `IBKR_CLIENT_ID`.
 
 **Before real money** (mandatory): validate on long history + walk-forward,
-then paper-trade for weeks. Strategies found on 2 months of data are research
-artifacts, not trade plans. `live-signal` uses Yahoo (delayed ~15 min); swap in
-the broker's live bars for real intraday execution.
+then paper-trade for weeks. The default 720-day ingest is the minimum serious
+window for long hourly MAs; shorter samples are research artifacts, not trade
+plans. `live-signal` uses Yahoo (delayed ~15 min); swap in the broker's live
+bars for real intraday execution.
 
 ## Notes
 
@@ -369,7 +454,8 @@ the broker's live bars for real intraday execution.
 (resampled from the 1h base, since Yahoo has no native 2h).
 - Behaviorally-identical strategies are de-duplicated at insert (a `dedup_key`
 unique constraint), so the DB never stores duplicate strategies.
-- Yahoo caps intraday history (~730 days for 1h). The default 60-day window is a
-small sample — fine for a demo, weak for selection. Use `LOOKBACK_DAYS=720`.
+- Yahoo caps intraday history (~730 days for 1h). Default `LOOKBACK_DAYS=720`
+uses nearly all of it — needed for institutional-length hourly MAs (e.g. 1400
+bars ≈ 200 trading days).
 - Backtests are close-to-close with a one-bar entry delay and per-side cost.
 Paper-trade before risking capital. No strategy here is a guaranteed winner.
