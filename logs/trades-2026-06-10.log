@@ -1,0 +1,14 @@
+2026-06-10 12:05:46Z  START  mode=dry-run poll=900s market_hours_only=False auto=True strategies=3 combine=priority reselect_on_flat=True risk=RiskConfig(order_qty=10, max_position=10, allow_short=True, kill_switch=False)
+2026-06-10 12:05:48Z  auto-select: 3 strategy(ies) promoted
+2026-06-10 12:05:48Z    auto-5931726: ema_cross(fast=5,slow=1400), rsi_meanrev(lower=10,period=2,upper=70), stoch_meanrev(d=3,k=7,lower=15,smooth=3,upper=85) (win=80%, score=4.2, oos_trades=48)
+2026-06-10 12:05:48Z    auto-5931723: ema_cross(fast=5,slow=1400), rsi_meanrev(lower=10,period=2,upper=70), stoch_meanrev(d=3,k=7,lower=15,smooth=3,upper=80) (win=80%, score=3.8, oos_trades=47)
+2026-06-10 12:05:48Z    auto-5746932: ema_cross(fast=5,slow=500), stoch_meanrev(d=3,k=7,lower=15,smooth=3,upper=80), stochrsi_meanrev(d=3,k=3,lower=15,period=21,upper=80) (win=81%, score=3.4, oos_trades=26)
+2026-06-10 12:05:51Z (NY 08:05)  OPEN  LONG 10 SPY @ 737.0599975585938  owner=auto-5746932  status=filled  reason=auto-5746932 took the trade
+    indicators: ema_cross(fast=5,slow=500) + stoch_meanrev(d=3,k=7,lower=15,smooth=3,upper=80) + stochrsi_meanrev(d=3,k=3,lower=15,period=21,upper=80) [long_only,and]
+2026-06-10 13:14:06Z  START  mode=dry-run poll=600s market_hours_only=True auto=True strategies=3 combine=priority reselect_on_flat=True risk=RiskConfig(order_qty=10, max_position=10, allow_short=True, kill_switch=False)
+2026-06-10 13:34:07Z  auto-select: 3 strategy(ies) promoted
+2026-06-10 13:34:07Z    auto-7194881: ema_cross(fast=10,slow=1400), rsi_meanrev(lower=10,period=2,upper=70), stoch_meanrev(d=3,k=7,lower=15,smooth=3,upper=85) (win=80%, score=4.2, oos_trades=49)
+2026-06-10 13:34:07Z    auto-5931726: ema_cross(fast=5,slow=1400), rsi_meanrev(lower=10,period=2,upper=70), stoch_meanrev(d=3,k=7,lower=15,smooth=3,upper=85) (win=80%, score=4.2, oos_trades=48)
+2026-06-10 13:34:07Z    auto-7194339: ema_cross(fast=10,slow=1400), rsi_meanrev(lower=10,period=2,upper=60), stoch_meanrev(d=3,k=7,lower=15,smooth=3,upper=80) (win=78%, score=3.9, oos_trades=48)
+2026-06-10 17:15:00Z (NY 13:15)  OPEN  LONG 10 SPY @ 728.989990234375  owner=auto-7194881  status=filled  reason=auto-7194881 took the trade
+    indicators: ema_cross(fast=10,slow=1400) + rsi_meanrev(lower=10,period=2,upper=70) + stoch_meanrev(d=3,k=7,lower=15,smooth=3,upper=85) [long_only,and]

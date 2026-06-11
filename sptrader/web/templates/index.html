@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>sptrader — winning strategies</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">▲</span>
+      <div>
+        <h1>sptrader</h1>
+        <p class="subtitle">Strategies that cleared the success-rate threshold</p>
+      </div>
+    </div>
+    <div class="run-meta" id="runMeta"></div>
+  </header>
+
+  <section class="controls">
+    <label>
+      Run
+      <select id="runSelect"></select>
+    </label>
+
+    <label class="threshold">
+      Min success rate
+      <span class="thresh-value" id="threshValue">70%</span>
+      <input type="range" id="winRate" min="0" max="100" step="1" value="70" />
+    </label>
+
+    <label>
+      Min trades
+      <input type="number" id="minTrades" min="0" step="1" value="20" />
+    </label>
+
+    <label title="require this many out-of-sample trades — kills 1-trade flukes">
+      Min OOS trades
+      <input type="number" id="minOosTrades" min="0" step="1" value="10" />
+    </label>
+
+    <label>
+      Sort by
+      <select id="orderBy">
+        <option value="score" selected>Robustness (min IS/OOS Sharpe)</option>
+        <option value="win_rate">Success rate</option>
+        <option value="oos_sharpe">OOS Sharpe</option>
+        <option value="oos_return">OOS return</option>
+      </select>
+    </label>
+
+    <button id="refreshBtn" class="btn">Refresh</button>
+    <span class="count" id="countLabel"></span>
+  </section>
+
+  <main>
+    <div id="empty" class="empty hidden"></div>
+    <table id="table" class="strategies">
+      <thead>
+        <tr>
+          <th></th>
+          <th>#</th>
+          <th>Success rate</th>
+          <th>Indicators that succeeded</th>
+          <th>Logic</th>
+          <th>Mode</th>
+          <th>ADX</th>
+          <th title="min(IS Sharpe, OOS Sharpe) — robustness score">Score</th>
+          <th>IS Sharpe</th>
+          <th>OOS Sharpe</th>
+          <th>OOS return</th>
+          <th>OOS maxDD</th>
+          <th title="winning trades / total trades">Trades (W/T)</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </main>
+
+  <footer class="foot">
+    Backtests include transaction costs and are split into in-sample / out-of-sample.
+    A high in-sample win rate alone is not proof — prefer rows where OOS holds up too.
+  </footer>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

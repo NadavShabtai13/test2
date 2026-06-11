@@ -1,0 +1,76 @@
+# Everything runs in containers. No host Python needed.
+#
+#   docker compose up -d postgres        # start the database
+#   docker compose run --rm app ingest   # pull Yahoo data into Postgres
+#   docker compose run --rm app optimize # run/resume the permutation search
+#   docker compose up -d app             # serve the dashboard at :8000
+#
+# Portable: copy this repo to any server with Docker and the same commands work.
+
+x-app-env: &app-env
+  # Inside the compose network the DB host is the service name "postgres".
+  DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-sptrader}:${POSTGRES_PASSWORD:-sptrader}@postgres:5432/${POSTGRES_DB:-sptrader}
+  SYMBOL: ${SYMBOL:-SPY}
+  LOOKBACK_DAYS: ${LOOKBACK_DAYS:-720}
+  BASE_INTERVAL: ${BASE_INTERVAL:-1h}
+  TARGET_INTERVAL: ${TARGET_INTERVAL:-1h}
+  COST_BPS: ${COST_BPS:-5}
+  TRAIN_FRACTION: ${TRAIN_FRACTION:-0.7}
+  # Parallel worker processes for the search (3 by default).
+  WORKERS: ${WORKERS:-3}
+  # --- Phase 2: live / paper trading (Interactive Brokers) ---
+  # Point at a running TWS / IB Gateway. On Linux the host is reachable via
+  # host.docker.internal (see extra_hosts on the app service).
+  IBKR_HOST: ${IBKR_HOST:-host.docker.internal}
+  IBKR_PORT: ${IBKR_PORT:-7497}        # 7497 TWS paper / 4002 Gateway paper
+  IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-17}
+  LIVE_ORDER_QTY: ${LIVE_ORDER_QTY:-10}
+  LIVE_MAX_POSITION: ${LIVE_MAX_POSITION:-10}
+  LIVE_ALLOW_SHORT: ${LIVE_ALLOW_SHORT:-true}
+  LIVE_KILL_SWITCH: ${LIVE_KILL_SWITCH:-false}
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: sptrader-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sptrader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sptrader}
+      POSTGRES_DB: ${POSTGRES_DB:-sptrader}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - sptrader_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sptrader} -d ${POSTGRES_DB:-sptrader}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    image: sptrader:latest
+    container_name: sptrader-app
+    restart: unless-stopped
+    # Hard memory ceiling: 2 GB (host has 8 GB). The search streams specs and
+    # runs 3 worker processes, so it stays well under this.
+    mem_limit: 2g
+    environment:
+      <<: *app-env
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    # Persist live-trading logs to the host so trades can be reviewed after the
+    # container is gone (live-*.jsonl + trades-*.log under ./logs).
+    volumes:
+      - ./logs:/app/logs
+    # Lets the container reach a TWS / IB Gateway running on the host (Linux).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Default command (web dashboard) comes from the image CMD.
+
+volumes:
+  sptrader_pgdata:

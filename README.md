@@ -353,100 +353,189 @@ break; **sign** = sign of the indicator vs its zero/centre line.
 > strategies with reasonable `num_trades` and solid OOS stats, not just IS win
 > rate.
 
-## Phase 2: live / paper trading (Interactive Brokers)
+## Phase 2: live / paper trading
 
-The same engine that backtests can compute the **current** LONG / SHORT / FLAT
-decision from the latest bars and send it to a broker. This is scaffolded and
-**paper/dry-run-first** — real money is gated behind an explicit flag.
+The live engine is a **bar-close bot** (not tick/HFT): it polls every N seconds
+during US regular hours, pulls the latest 1h bars, computes LONG / SHORT /
+FLAT, and optionally sends orders. Data for decisions comes from **Yahoo** in
+both `dry-run` and `paper` today (~15 min delay — fine for plumbing tests, not
+for real-money execution).
 
-There are two ways to choose which strategy trades:
+US market open is **09:30 America/New_York** ≈ **16:30 Israel** (summer IDT).
+The bot idles outside RTH when `market_hours_only` is on (default).
 
-- **Manual** — you inspect the dashboard and freeze one row with `promote`.
-- **Automatic** — the bot picks the best strategy from the DB itself, by
-objective criteria (robustness + enough out-of-sample trades). No human pick.
+### Recommended rollout (two steps)
 
-Flow (manual):
+| Step | When | Mode | Data | Orders |
+| ---- | ---- | ---- | ---- | ------ |
+| **1. Yahoo session** | A few hours on a trading day | `dry-run` | Yahoo | None — JSON logs only |
+| **2. IBKR demo** | After step 1 looks sane | `paper` | Yahoo (signals) + IBKR (fills) | Paper account |
+
+Helper script (wraps the commands below): `scripts/start-live.sh`
 
 ```bash
-# 1. Pick a strategy from the search and freeze it as the live strategy
-docker compose run --rm app promote --result-id <ID>
+chmod +x scripts/start-live.sh   # once
+```
 
-# 2. See the current decision (no broker, Yahoo bars)
+### Before the session (any mode)
+
+Run ~5 minutes before **16:30 Israel** (or whenever you want to start). This
+checks the DB, promotes the current top-3 pool, and prints one live decision:
+
+```bash
+./scripts/start-live.sh preflight
+```
+
+Default selection (tunable via env `RUN_ID`):
+
+- `--run-id 3` — current optimize run
+- `--strategies 3` — top 3 candidates in the pool
+- `--combine priority` — **one strategy owns each trade** (sticky until FLAT)
+- `--order-by score` — max robustness = `min(IS Sharpe, OOS Sharpe)`
+- `--min-oos-trades 25` `--min-trades 50` `--min-win-rate 0.78`
+
+After each **closed trade**, `--reselect-on-flat` (default with `--auto`) refreshes
+the top-3 pool; the highest-ranked strategy that fires next takes the trade.
+
+### Step 1 — Yahoo dry-run (a few hours today)
+
+No broker needed. Decisions are logged; no orders placed.
+
+```bash
+# Start in the background (waits for US RTH if started early)
+./scripts/start-live.sh dry-run
+
+# Watch decisions
+docker logs -f sptrader-live
+
+# Stop when done
+./scripts/start-live.sh stop
+```
+
+Equivalent manual command:
+
+```bash
+docker compose run -d --name sptrader-live app \
+  live-run --auto --reselect-on-flat --mode dry-run \
+  --poll-seconds 600 --combine priority \
+  --run-id 3 --strategies 3 --order-by score \
+  --min-oos-trades 25 --min-trades 50 --min-win-rate 0.78
+```
+
+One-shot smoke test (no loop):
+
+```bash
+docker compose run --rm app live-run --auto --mode dry-run --once \
+  --run-id 3 --strategies 3 --combine priority \
+  --order-by score --min-oos-trades 25 --min-trades 50 --min-win-rate 0.78 \
+  --ignore-market-hours
+```
+
+### Step 2 — Interactive Brokers paper (demo)
+
+**Prerequisites:** TWS or IB Gateway running on the host in **paper** mode
+(port **7497** for TWS paper / **4002** for Gateway paper). Docker reaches the
+host via `host.docker.internal` (already set in `docker-compose.yml`).
+
+```bash
+# Optional: confirm IBKR env in .env
+# IBKR_HOST=host.docker.internal
+# IBKR_PORT=7497
+# IBKR_CLIENT_ID=17
+
+./scripts/start-live.sh paper
+docker logs -f sptrader-live
+
+# Stop
+./scripts/start-live.sh stop
+```
+
+Equivalent manual command:
+
+```bash
+docker compose run -d --name sptrader-live app \
+  live-run --auto --reselect-on-flat --mode paper \
+  --poll-seconds 600 --combine priority \
+  --run-id 3 --strategies 3 --order-by score \
+  --min-oos-trades 25 --min-trades 50 --min-win-rate 0.78
+```
+
+Signals still use Yahoo bars; only **order routing** goes to IBKR paper.
+
+### How priority arbitration works
+
+With `--strategies 3 --combine priority` (recommended):
+
+1. Three strategies are ranked by `score`.
+2. On each poll, the **highest-ranked strategy that is firing** (LONG/SHORT)
+   *owns* the trade and keeps control until it goes FLAT (sticky owner).
+3. When the position closes, the top-3 pool is **re-selected** from the DB and
+   the field reopens — again, first by rank that fires wins.
+4. Only **one position at a time** on SPY.
+
+Alternative: `--combine net` sums independent sleeves (not recommended for a
+single account).
+
+### Manual strategy pick (optional)
+
+Skip `--auto` and freeze one dashboard row yourself:
+
+```bash
+docker compose run --rm app promote --result-id <DB_ID>   # not dashboard row #
 docker compose run --rm app live-signal
-
-# 3a. Dry-run: decide + log, place NO orders (no IBKR needed)
-docker compose run --rm app live-run --mode dry-run --once --ignore-market-hours
-
-# 3b. Paper: route to an IBKR *paper* account (needs TWS/IB Gateway running)
-docker compose run --rm app live-run --mode paper --poll-seconds 900
+docker compose run --rm app live-run --mode dry-run --poll-seconds 600
 ```
 
-Flow (automatic — bot selects, no manual promote):
+### Selection flags (`auto-select` / `live-run --auto`)
+
+- `--order-by` — `score` (default), `oos_sharpe`, `oos_return`, `win_rate`
+- `--min-win-rate` `--min-trades` `--min-oos-trades` — sample-size filters
+- `--run-id` — pick from a specific optimize run (default: latest)
+- `--strategies N` — top N in the pool (default 1; we use 3)
+- `--reselect-on-flat` / `--no-reselect-on-flat` — refresh pool after each trade
+
+### Trade logs (post-mortem)
+
+Everything the live runner prints is **also** written to files under `./logs`
+(bind-mounted into the container via `docker-compose.yml`), so trades can be
+reviewed after the container is gone. Two files roll per UTC day:
+
+| File | Format | Use |
+| ---- | ------ | --- |
+| `logs/live-YYYY-MM-DD.jsonl` | one JSON object per poll | full snapshot: every sleeve's signal/price, chosen owner, target qty, risk reason, broker order + fill |
+| `logs/trades-YYYY-MM-DD.log` | human-readable | `OPEN` / `CLOSE` / `FLIP` / `ADJUST` events with entry/exit price, side, `move%`, holding time, owning strategy's indicators |
 
 ```bash
-# See which strategy the bot WOULD pick, and freeze it now
-docker compose run --rm app auto-select --order-by score --min-oos-trades 10 --min-win-rate 0.55
-
-# Run the trader so it re-picks the best strategy at the START OF EACH trading day
-docker compose run --rm app live-run --auto --mode dry-run \
-  --order-by score --min-oos-trades 10 --min-trades 20 --min-win-rate 0.55
+tail -f logs/trades-$(date -u +%F).log      # follow trades as they happen
+cat  logs/trades-$(date -u +%F).log         # ledger for post-mortem
+jq . logs/live-$(date -u +%F).jsonl         # full per-poll detail
 ```
 
-`--auto` makes `live-run` re-run the selection once per trading day, then follow
-that strategy's indicator signals for the day. If no strategy clears the
-criteria, the bot stays **flat** rather than trading a weak pick. Selection
-flags (shared by `auto-select` and `live-run --auto`):
+Each `CLOSE` line reports the round trip, e.g.:
 
-- `--order-by` — `score` (robustness = min(IS,OOS Sharpe)), `oos_sharpe`,
-`oos_return`, or `win_rate`.
-- `--min-win-rate` — e.g. `0.55` requires ≥55% winning trades.
-- `--min-trades` / `--min-oos-trades` — reject tiny, fluke samples.
-- `--run-id` — pick from a specific run (default: the latest).
-- `--strategies N` — run the **top N strategies as an ensemble** (default 1).
-
-### Several strategies at once (`--strategies N`, `--combine`)
-
-With `--strategies N > 1` the bot considers the top N strategies together. On a
-single account a symbol has only ONE net position, so there are two honest ways
-to combine them (`--combine`):
-
-- `**priority` (default, recommended)** — **one position at a time**. Every poll
-each strategy computes its own LONG/SHORT/FLAT. The highest-ranked strategy
-(by `score`) that is currently firing *owns* the trade and holds it until it
-goes FLAT (sticky); only then does the field reopen and the next best-ranked
-firing strategy take over. This is "one strategy per trade": if strategy X's
-indicators hold it trades X; once that trade closes, all N are re-checked and
-whichever fires (by rank) takes the next trade. No double-counting, no
-cancellation.
-- `**net`** — each strategy is an independent *sleeve* contributing
-`LIVE_ORDER_QTY` shares; the position is their **sum**, clamped to
-`LIVE_MAX_POSITION`. Agreeing strategies stack; disagreeing ones cancel. More
-capital-efficient but less intuitive on one account.
-
-```bash
-# Top 3 strategies, one-position priority arbitration, re-picked each day
-docker compose run --rm app live-run --auto --strategies 3 --combine priority \
-  --mode dry-run --order-by score --min-oos-trades 10 --min-trades 20 --min-win-rate 0.55
+```
+2026-06-10 16:30:00Z (NY 12:30)  CLOSE LONG SPY @ 105.0  entry=100.0  move=+5.00%  held=2h00m  owner=auto-123  status=Filled, fill=105.01
 ```
 
-Note on ranking: "first to fire" is decided by **rank (score), not wall-clock
-time** — all strategies are evaluated on the same bar, so a deterministic
-rank-based tie-break avoids thrashing. In `net` mode, N sleeves can push up to
-`N * LIVE_ORDER_QTY`, so raise `LIVE_MAX_POSITION` if you want them to express
-fully (e.g. 3 × 10 → `LIVE_MAX_POSITION=30`).
+Override the directory with `LIVE_LOG_DIR` (default `logs`). Files inside the
+container are written by root; remove them from the host with
+`docker run --rm -v "$PWD/logs:/l" alpine rm -f /l/live-*.jsonl /l/trades-*.log`
+if needed.
 
-Modes: `dry-run` (default, no orders), `paper` (IBKR paper port 7497/4002),
-`live` (real money — refused unless you add `--i-understand-the-risk`).
+### Modes & risk
 
-Risk controls (env / `.env`): `LIVE_ORDER_QTY`, `LIVE_MAX_POSITION`,
-`LIVE_ALLOW_SHORT`, `LIVE_KILL_SWITCH`. IBKR connection: `IBKR_HOST`,
-`IBKR_PORT`, `IBKR_CLIENT_ID`.
+| Mode | Orders | Notes |
+| ---- | ------ | ----- |
+| `dry-run` | None | Safe default for Yahoo sessions |
+| `paper` | IBKR paper | Needs TWS/Gateway |
+| `live` | Real money | Requires `--i-understand-the-risk` |
 
-**Before real money** (mandatory): validate on long history + walk-forward,
-then paper-trade for weeks. The default 720-day ingest is the minimum serious
-window for long hourly MAs; shorter samples are research artifacts, not trade
-plans. `live-signal` uses Yahoo (delayed ~15 min); swap in the broker's live
-bars for real intraday execution.
+Env (see `.env.example` / `docker-compose.yml`): `LIVE_ORDER_QTY`,
+`LIVE_MAX_POSITION`, `LIVE_ALLOW_SHORT`, `LIVE_KILL_SWITCH`, `IBKR_HOST`,
+`IBKR_PORT`, `IBKR_CLIENT_ID`, `IBKR_FILL_TIMEOUT`, `LIVE_LOG_DIR`.
+
+**Before real money:** weeks of paper, walk-forward validation, and replacing
+Yahoo with IBKR historical/real-time bars in `live/signal.py`.
 
 ## Notes
 
@@ -459,3 +548,4 @@ uses nearly all of it — needed for institutional-length hourly MAs (e.g. 1400
 bars ≈ 200 trading days).
 - Backtests are close-to-close with a one-bar entry delay and per-side cost.
 Paper-trade before risking capital. No strategy here is a guaranteed winner.
+
