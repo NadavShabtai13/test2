@@ -8,7 +8,8 @@ Categories covered:
     trend       SMA, EMA, WMA, MACD, ADX(+DI/-DI), Aroon, Parabolic SAR,
                 Ichimoku, Supertrend
     momentum    RSI, Stochastic, StochRSI, CCI, Williams %R, ROC, Momentum, TSI
-    volatility  Bollinger Bands, ATR, Keltner Channels, Donchian Channels
+    volatility  Bollinger Bands, ATR, Keltner Channels, Donchian Channels,
+                Fair Value Gap (ICT 3-bar imbalance)
     volume      OBV, VWAP, CMF, MFI, A/D line, Force Index, Ease of Movement
 """
 from __future__ import annotations
@@ -290,6 +291,50 @@ def donchian_channels(high: pd.Series, low: pd.Series, period: int = 20) -> pd.D
     upper = high.rolling(period, min_periods=period).max()
     lower = low.rolling(period, min_periods=period).min()
     return pd.DataFrame({"upper": upper, "lower": lower, "mid": (upper + lower) / 2})
+
+
+# --------------------------------------------------------------------------- #
+# Price action -- Fair Value Gap (ICT 3-bar imbalance)
+# --------------------------------------------------------------------------- #
+
+
+def fair_value_gap(
+    high: pd.Series, low: pd.Series, close: pd.Series, min_gap_atr: float = 0.0
+) -> pd.DataFrame:
+    """Detect 3-bar Fair Value Gaps (FVG / imbalances). Causal, no look-ahead.
+
+    A *bullish* FVG forms at bar ``i`` when ``low[i] > high[i-2]`` -- the middle
+    bar's impulse left an untraded gap between the high of two bars ago and the
+    current low. A *bearish* FVG forms when ``high[i] < low[i-2]``.
+
+    ``min_gap_atr`` ignores gaps thinner than ``min_gap_atr × ATR(14)`` so tiny
+    noise imbalances are filtered out (0.0 keeps every gap).
+
+    Returns per bar:
+        bull, bear           1.0 on the bar a gap is detected, else 0.0
+        bull_top, bull_bot   boundaries of the most-recent bullish gap (ffill)
+        bear_top, bear_bot   boundaries of the most-recent bearish gap (ffill)
+    """
+    high_2 = high.shift(2)
+    low_2 = low.shift(2)
+    atr_ = atr(high, low, close, 14)
+    threshold = (min_gap_atr * atr_).fillna(0.0)
+
+    gap_up = low - high_2  # > 0 => bullish imbalance
+    gap_dn = low_2 - high  # > 0 => bearish imbalance
+    bull = (gap_up > 0) & (gap_up >= threshold)
+    bear = (gap_dn > 0) & (gap_dn >= threshold)
+
+    return pd.DataFrame(
+        {
+            "bull": bull.astype(float),
+            "bear": bear.astype(float),
+            "bull_top": low.where(bull).ffill(),
+            "bull_bot": high_2.where(bull).ffill(),
+            "bear_top": low_2.where(bear).ffill(),
+            "bear_bot": high.where(bear).ffill(),
+        }
+    )
 
 
 # --------------------------------------------------------------------------- #

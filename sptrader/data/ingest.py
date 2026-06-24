@@ -1,4 +1,4 @@
-"""Yahoo Finance ingestion with resampling and idempotent, resumable storage."""
+"""Yahoo Finance ingestion with idempotent, resumable storage (1h candles)."""
 from __future__ import annotations
 
 import datetime as dt
@@ -9,21 +9,6 @@ import pandas as pd
 from ..config import get_settings
 from ..db import is_postgres, session_scope
 from ..models import Candle, IngestionCheckpoint
-
-# Map our human interval -> the pandas resample rule.
-_RESAMPLE_RULE = {
-    "2h": "2h",
-    "4h": "4h",
-    "1d": "1D",
-}
-
-_OHLCV_AGG = {
-    "open": "first",
-    "high": "max",
-    "low": "min",
-    "close": "last",
-    "volume": "sum",
-}
 
 
 def fetch_ohlcv(symbol: str, lookback_days: int, interval: str) -> pd.DataFrame:
@@ -64,24 +49,6 @@ def fetch_ohlcv(symbol: str, lookback_days: int, interval: str) -> pd.DataFrame:
     df = df.dropna(subset=["open", "high", "low", "close"])
     df.index.name = "ts"
     return df
-
-
-def resample_ohlcv(df: pd.DataFrame, target_interval: str, base_interval: str | None = None) -> pd.DataFrame:
-    """Resample a finer-grained OHLCV frame to ``target_interval`` (e.g. 1h -> 2h).
-
-    If the target equals the base interval (e.g. 1h -> 1h) there is nothing to
-    resample; the frame is returned as-is. Empty buckets (overnight/weekend
-    gaps) are dropped.
-    """
-    if base_interval is not None and target_interval == base_interval:
-        return df.copy()
-    rule = _RESAMPLE_RULE.get(target_interval)
-    if rule is None:
-        raise ValueError(f"Unsupported target_interval {target_interval!r}")
-    out = df.resample(rule, label="left", closed="left").agg(_OHLCV_AGG)
-    out = out.dropna(subset=["open", "high", "low", "close"])
-    out.index.name = "ts"
-    return out
 
 
 def _ensure_utc_index(index: pd.Index) -> pd.DatetimeIndex:
@@ -157,10 +124,8 @@ def _update_checkpoint(session, symbol: str, interval: str, last_ts: dt.datetime
 def ingest(
     symbol: Optional[str] = None,
     lookback_days: Optional[int] = None,
-    base_interval: Optional[str] = None,
-    target_interval: Optional[str] = None,
 ) -> dict:
-    """Fetch, resample, and persist candles. Idempotent and safe to re-run.
+    """Fetch and persist 1h candles. Idempotent and safe to re-run.
 
     Returns a small summary dict.
     """
@@ -171,37 +136,21 @@ def ingest(
     s = get_settings()
     symbol = symbol or s.symbol
     lookback_days = lookback_days or s.lookback_days
-    base_interval = base_interval or s.base_interval
-    target_interval = target_interval or s.target_interval
+    interval = s.interval
 
-    base_df = fetch_ohlcv(symbol, lookback_days, base_interval)
-    target_df = resample_ohlcv(base_df, target_interval, base_interval)
-    same = target_interval == base_interval
+    df = fetch_ohlcv(symbol, lookback_days, interval)
 
     with session_scope() as session:
-        n_base = _upsert_candles(session, symbol, base_interval, base_df)
-        if not base_df.empty:
-            _update_checkpoint(session, symbol, base_interval, base_df.index[-1].to_pydatetime(), n_base)
-        if same:
-            # base == target: store once, don't duplicate the same series.
-            n_target = n_base
-        else:
-            n_target = _upsert_candles(session, symbol, target_interval, target_df)
-            if not target_df.empty:
-                _update_checkpoint(
-                    session, symbol, target_interval, target_df.index[-1].to_pydatetime(), n_target
-                )
+        n_rows = _upsert_candles(session, symbol, interval, df)
+        if not df.empty:
+            _update_checkpoint(session, symbol, interval, df.index[-1].to_pydatetime(), n_rows)
 
     return {
         "symbol": symbol,
-        "base_interval": base_interval,
-        "target_interval": target_interval,
-        "base_rows": n_base,
-        "target_rows": n_target,
-        "base_start": base_df.index[0].isoformat() if not base_df.empty else None,
-        "base_end": base_df.index[-1].isoformat() if not base_df.empty else None,
-        "target_start": target_df.index[0].isoformat() if not target_df.empty else None,
-        "target_end": target_df.index[-1].isoformat() if not target_df.empty else None,
+        "interval": interval,
+        "rows": n_rows,
+        "start": df.index[0].isoformat() if not df.empty else None,
+        "end": df.index[-1].isoformat() if not df.empty else None,
     }
 
 

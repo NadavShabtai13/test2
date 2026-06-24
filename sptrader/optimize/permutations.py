@@ -30,14 +30,21 @@ from ..signals import (
     enumerate_instances,
 )
 
+# The default search: dense parameter grids, both AND/OR vote logic and both
+# direction modes, up to 4 indicators per strategy -- but only *cross-category*
+# combinations (distinct categories, one instance each: trend + momentum +
+# volatility + volume). Stacking same-category indicators is redundant
+# (multicollinearity) and inflates the search / overfitting risk, so it is
+# excluded by default. `--max-combo-size` tunes the combo size; `--full` is kept
+# as a (redundant) alias of this default.
 DEFAULT_CONFIG: Dict[str, Any] = {
     "categories": list(CATEGORIES),
-    "max_combo_size": 3,
+    "max_combo_size": 4,
     "modes": ["long_only", "long_short"],
     "adx_filters": [None],  # e.g. [None, 25] to also try ADX-gated variants
-    "combines": ["and"],  # exhaustive search adds "or"
-    "dense": False,  # exhaustive search uses the dense parameter grids
-    "cross_category_only": True,  # exhaustive search sets this False (all combos)
+    "combines": ["and", "or"],
+    "dense": True,
+    "cross_category_only": True,
 }
 
 
@@ -79,46 +86,46 @@ def _by_category(instances: List[SignalInstance]) -> Dict[str, List[SignalInstan
     return out
 
 
-def _base_combinations(config: Dict[str, Any]) -> List[Tuple[SignalInstance, ...]]:
+def _base_combinations(
+    config: Dict[str, Any]
+) -> Iterator[Tuple[SignalInstance, ...]]:
+    """Yield base instance combinations lazily (never materialized).
+
+    Streaming matters: dense size-4 cross-category combos number in the tens of
+    millions, so building a list would blow the 2GB cap. Callers iterate.
+    """
     categories = config.get("categories", list(CATEGORIES))
     max_size = int(config.get("max_combo_size", 3))
     dense = bool(config.get("dense", False))
     cross_only = bool(config.get("cross_category_only", True))
     instances = enumerate_instances(categories=tuple(categories), dense=dense)
 
-    combos: List[Tuple[SignalInstance, ...]] = []
-
     if not cross_only:
         # Exhaustive: every combination of every instance, all sizes 1..max_size
         # (this includes same-category combos and is the largest search space).
         for k in range(1, max_size + 1):
-            combos.extend(itertools.combinations(instances, k))
-        return combos
+            yield from itertools.combinations(instances, k)
+        return
 
     grouped = _by_category(instances)
+    active = [c for c in CATEGORIES if c in categories and grouped[c]]
 
-    # size 1
-    if max_size >= 1:
-        combos.extend((inst,) for inst in instances)
-
-    # size 2: cross-category pairs only
-    if max_size >= 2:
-        active = [c for c in CATEGORIES if c in categories and grouped[c]]
-        for cat_a, cat_b in itertools.combinations(active, 2):
-            for a, b in itertools.product(grouped[cat_a], grouped[cat_b]):
-                combos.append((a, b))
-
-    # size 3: trend x momentum x (volatility | volume)
-    if max_size >= 3 and "trend" in categories and "momentum" in categories:
-        for third_cat in ("volatility", "volume"):
-            if third_cat not in categories:
-                continue
-            for t, m, x in itertools.product(
-                grouped["trend"], grouped["momentum"], grouped[third_cat]
-            ):
-                combos.append((t, m, x))
-
-    return combos
+    # Cross-category combos of size k: pick k *distinct* categories and one
+    # instance from each. This keeps strategies non-redundant (the research
+    # consensus) and generalizes cleanly to any size up to the number of
+    # categories -- so max_size=4 yields one trend + momentum + volatility +
+    # volume signal. Beyond that there are no more categories to add, so larger
+    # sizes need the exhaustive (all-combos) path instead.
+    for k in range(1, max_size + 1):
+        if k == 1:
+            for inst in instances:
+                yield (inst,)
+            continue
+        if k > len(active):
+            break
+        for cat_combo in itertools.combinations(active, k):
+            pools = [grouped[c] for c in cat_combo]
+            yield from itertools.product(*pools)
 
 
 def iter_strategies(config: Dict[str, Any] | None = None) -> Iterator[StrategySpec]:
@@ -135,19 +142,15 @@ def iter_strategies(config: Dict[str, Any] | None = None) -> Iterator[StrategySp
     cross_only = bool(cfg.get("cross_category_only", True))
 
     if cross_only:
-        # Smaller, structured space -> dedupe defensively with a seen set.
-        seen = set()
+        # _base_combinations yields unique instance sets (distinct categories,
+        # one instance each), so the (set, mode, adx, combine) tuples are already
+        # unique -> no seen set needed, which keeps memory flat on dense grids.
         for instances in _base_combinations(cfg):
             combine_opts = ["and"] if len(instances) == 1 else combines
             for mode in modes:
                 for adx_min in adx_filters:
                     for combine in combine_opts:
-                        spec = StrategySpec(instances, mode, adx_min, combine)
-                        sig = spec.signature()
-                        if sig in seen:
-                            continue
-                        seen.add(sig)
-                        yield spec
+                        yield StrategySpec(instances, mode, adx_min, combine)
         return
 
     # Exhaustive: itertools.combinations yields unique instance sets, so the

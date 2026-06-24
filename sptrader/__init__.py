@@ -1,7 +1,7 @@
 """sptrader: an S&P 500 indicator-permutation backtesting & strategy-search toolkit.
 
 Pipeline:
-    1. ingest   -> pull OHLCV from Yahoo, resample to 2h, store in Postgres
+    1. ingest   -> pull 1h OHLCV from Yahoo, store in Postgres
     2. optimize -> permute indicator-based strategies, backtest each, store results
     3. report   -> rank strategies by out-of-sample robustness
 

@@ -1,7 +1,7 @@
 # Everything runs in containers. No host Python needed.
 #
 #   docker compose up -d postgres        # start the database
-#   docker compose run --rm app ingest   # pull Yahoo data into Postgres
+#   docker compose run --rm app ingest   # pull Yahoo 1h data into Postgres
 #   docker compose run --rm app optimize # run/resume the permutation search
 #   docker compose up -d app             # serve the dashboard at :8000
 #
@@ -12,8 +12,6 @@ x-app-env: &app-env
   DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-sptrader}:${POSTGRES_PASSWORD:-sptrader}@postgres:5432/${POSTGRES_DB:-sptrader}
   SYMBOL: ${SYMBOL:-SPY}
   LOOKBACK_DAYS: ${LOOKBACK_DAYS:-720}
-  BASE_INTERVAL: ${BASE_INTERVAL:-1h}
-  TARGET_INTERVAL: ${TARGET_INTERVAL:-1h}
   COST_BPS: ${COST_BPS:-5}
   TRAIN_FRACTION: ${TRAIN_FRACTION:-0.7}
   # Parallel worker processes for the search (3 by default).

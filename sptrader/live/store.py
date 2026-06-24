@@ -28,7 +28,7 @@ def promote(
             raise ValueError(f"strategy_result id={result_id} not found")
         run = session.get(OptimizationRun, r.run_id)
         symbol = run.symbol if run else "SPY"
-        interval = run.interval if run else "2h"
+        interval = run.interval if run else "1h"
 
         if exclusive:
             session.query(LiveStrategy).filter_by(status="active").update(

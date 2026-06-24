@@ -103,7 +103,7 @@ def run_optimization(
 
     settings = get_settings()
     cfg = {**DEFAULT_CONFIG, **(config or {})}
-    symbol, interval = settings.symbol, settings.target_interval
+    symbol, interval = settings.symbol, settings.interval
 
     df = load_candles(symbol, interval)
     if df.empty:

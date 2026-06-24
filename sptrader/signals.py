@@ -210,6 +210,22 @@ def _donchian_breakout(df, period):
     return _held_regime(up=df["close"] >= upper_prev, down=df["close"] <= lower_prev)
 
 
+def _fvg_dir(df, min_gap_atr):
+    """Continuation: hold long after a bullish FVG, short after a bearish one."""
+    f = ta.fair_value_gap(df["high"], df["low"], df["close"], min_gap_atr)
+    return _held_regime(up=f["bull"] > 0, down=f["bear"] > 0)
+
+
+def _fvg_meanrev(df, min_gap_atr):
+    """Mean-reversion: go long when price pulls back into the latest bullish FVG
+    zone (acting as support), exit once it trades back above the gap top."""
+    f = ta.fair_value_gap(df["high"], df["low"], df["close"], min_gap_atr)
+    close = df["close"]
+    in_zone = (close <= f["bull_top"]) & (close >= f["bull_bot"])
+    above = close > f["bull_top"]
+    return _held_long(entry=in_zone, exit_=above)
+
+
 # --------------------------------------------------------------------------- #
 # Builders -- volume
 # --------------------------------------------------------------------------- #
@@ -295,6 +311,8 @@ _register("bollinger_meanrev", "volatility", {"period": [20], "num_std": [2.0, 2
 _register("bollinger_breakout", "volatility", {"period": [20], "num_std": [2.0]}, _bollinger_breakout)
 _register("keltner_breakout", "volatility", {"period": [20], "multiplier": [2.0]}, _keltner_breakout)
 _register("donchian_breakout", "volatility", {"period": [20, 55]}, _donchian_breakout)
+_register("fvg_dir", "volatility", {"min_gap_atr": [0.0, 0.5]}, _fvg_dir)
+_register("fvg_meanrev", "volatility", {"min_gap_atr": [0.0, 0.5]}, _fvg_meanrev)
 
 _register("obv_trend", "volume", {"period": [20]}, _obv_trend)
 _register("cmf_sign", "volume", {"period": [20]}, _cmf_sign)
@@ -335,6 +353,8 @@ DENSE_GRIDS: Dict[str, Dict[str, List[Any]]] = {
     "bollinger_breakout": {"period": [10, 20, 30, 50], "num_std": [1.5, 2.0, 2.5, 3.0]},
     "keltner_breakout": {"period": [10, 20], "multiplier": [1.5, 2.0, 2.5]},
     "donchian_breakout": {"period": [10, 20, 40, 55]},
+    "fvg_dir": {"min_gap_atr": [0.0, 0.25, 0.5, 1.0]},
+    "fvg_meanrev": {"min_gap_atr": [0.0, 0.25, 0.5, 1.0]},
     "obv_trend": {"period": [20, 50, 100]},
     "cmf_sign": {"period": [20, 50, 100]},
     "mfi_meanrev": {"period": [10, 14, 21], "lower": [15, 20], "upper": [80, 85]},

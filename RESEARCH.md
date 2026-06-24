@@ -33,9 +33,11 @@ StratBase, arxum) converge on the same rule:
   signals materially cuts losing trades in range-bound markets (cited win-rate
   improvements of ~22–28%).
 
-**Encoded here:** the permutation engine only forms *cross-category* pairs and
-restricts triples to `trend × momentum × (volatility | volume)`. ADX gating is
-available as an optional filter (`--adx-filters 25`).
+**Encoded here:** the permutation engine combines up to 4 indicators per
+strategy, one from each category (trend + momentum + volatility + volume). Only
+cross-category combinations are formed; same-category stacks are excluded as
+redundant (multicollinearity). ADX gating is an optional filter (`--adx-filters
+25`).
 
 ## 3. What practitioners say actually matters (r/algotrading)
 
@@ -77,7 +79,7 @@ OOS Sharpe side by side so you can eyeball stability.
 - `min(IS, OOS)` is a pragmatic robustness proxy, **not** a full walk-forward +
   DSR/PBO pipeline. A rolling walk-forward and a deflated-Sharpe adjustment are
   the natural next upgrades (see README → Roadmap).
-- The **default 2-month / 2h window is small** (~195 bars). That is fine for a
+- A **short lookback window is small** in bar count. That is fine for a
   plumbing demo but statistically weak for strategy selection. Use
   `LOOKBACK_DAYS=720` (Yahoo's ~730-day intraday cap) for anything you intend to
   take seriously.

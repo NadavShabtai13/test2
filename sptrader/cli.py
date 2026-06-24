@@ -6,7 +6,7 @@ Usage:
 Commands:
     check-db   verify the database connection
     init-db    create tables
-    ingest     pull Yahoo data, resample to 2h, store (idempotent / resumable)
+    ingest     pull Yahoo 1h data, store (idempotent / resumable)
     optimize   run/resume the indicator-permutation search
     status     show progress of a run
     report     show the top strategies of a run
@@ -60,8 +60,6 @@ def _cmd_ingest(args) -> int:
     summary = ingest(
         symbol=args.symbol,
         lookback_days=args.lookback_days,
-        base_interval=args.base_interval,
-        target_interval=args.target_interval,
     )
     print("[ingest]")
     for k, v in summary.items():
@@ -73,28 +71,13 @@ def _cmd_optimize(args) -> int:
     from .optimize.permutations import DEFAULT_CONFIG, count_strategies
     from .optimize.runner import run_optimization
 
+    # The exhaustive search (dense grids, all combos, AND+OR, both modes, size 4)
+    # is the default now -- see permutations.DEFAULT_CONFIG. Flags only narrow it.
     config = {}
-    if args.categories:
-        config["categories"] = args.categories
     if args.max_combo_size is not None:
         config["max_combo_size"] = args.max_combo_size
-    if args.modes:
-        config["modes"] = args.modes
     if args.adx_filters is not None:
         config["adx_filters"] = [None if a < 0 else a for a in args.adx_filters]
-    if args.combines:
-        config["combines"] = args.combines
-    if args.dense:
-        config["dense"] = True
-    if args.all_combos:
-        config["cross_category_only"] = False
-
-    # --full = exhaustive: all indicators, dense grids, all combos, AND+OR.
-    if args.full:
-        config["dense"] = True
-        config["cross_category_only"] = False
-        config["combines"] = ["and", "or"]
-        config["modes"] = config.get("modes") or ["long_only", "long_short"]
 
     if args.dry_run:
         cfg = {**DEFAULT_CONFIG, **config}
@@ -114,7 +97,6 @@ def _cmd_optimize(args) -> int:
         config=config or None,
         name=args.name,
         restart=args.restart,
-        max_combos=args.max_combos,
         workers=args.workers,
     )
     print(f"[optimize] {result}")
@@ -267,20 +249,22 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("check-db", help="verify DB connection").set_defaults(func=_cmd_check_db)
     sub.add_parser("init-db", help="create tables").set_defaults(func=_cmd_init_db)
 
-    pi = sub.add_parser("ingest", help="pull + resample + store candles")
+    pi = sub.add_parser("ingest", help="pull + store 1h candles")
     pi.add_argument("--symbol", default=None)
     pi.add_argument("--lookback-days", type=int, default=None)
-    pi.add_argument("--base-interval", default=None)
-    pi.add_argument("--target-interval", default=None)
     pi.set_defaults(func=_cmd_ingest)
 
     po = sub.add_parser("optimize", help="run/resume the permutation search")
     po.add_argument("--name", default="default")
     po.add_argument("--restart", action="store_true", help="discard prior progress")
-    po.add_argument("--max-combos", type=int, default=None, help="cap number of permutations")
-    po.add_argument("--categories", nargs="*", default=None)
-    po.add_argument("--max-combo-size", type=int, default=None, choices=[1, 2, 3])
-    po.add_argument("--modes", nargs="*", default=None, choices=["long_only", "long_short"])
+    po.add_argument(
+        "--max-combo-size",
+        type=int,
+        default=None,
+        choices=[1, 2, 3, 4, 5, 6],
+        help="max indicators per strategy (default 4, one per category). "
+        "Lower it (e.g. 2-3) for much faster runs",
+    )
     po.add_argument(
         "--adx-filters",
         nargs="*",
@@ -289,24 +273,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="ADX thresholds to gate entries; use a negative value to mean 'no filter'",
     )
     po.add_argument(
-        "--combines",
-        nargs="*",
-        default=None,
-        choices=["and", "or"],
-        help="vote-combination logic to try (default: and)",
-    )
-    po.add_argument(
-        "--dense", action="store_true", help="use dense parameter grids (many more values)"
-    )
-    po.add_argument(
-        "--all-combos",
-        action="store_true",
-        help="allow every combination incl. same-category (not just cross-category)",
-    )
-    po.add_argument(
         "--full",
         action="store_true",
-        help="exhaustive: all indicators, dense grids, all combos, AND+OR (very large)",
+        help="no-op, kept for backwards compatibility (the default search is "
+        "already dense + AND/OR + both modes)",
     )
     po.add_argument(
         "--dry-run",

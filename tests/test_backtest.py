@@ -4,10 +4,10 @@ import pandas as pd
 from sptrader.backtest.engine import backtest, periods_per_year, train_test_split
 
 
-def test_periods_per_year_2h(ohlcv):
+def test_periods_per_year_1h(ohlcv):
     ppy = periods_per_year(ohlcv.index)
-    # 2h bars -> 12 per day -> ~4380 per calendar year
-    assert 4000 < ppy < 4800
+    # 1h bars -> 24 per day -> ~8766 per calendar year
+    assert 8000 < ppy < 9500
 
 
 def test_buy_and_hold_matches_asset(ohlcv):

@@ -39,8 +39,7 @@ class Settings:
     )
     symbol: str = field(default_factory=lambda: os.getenv("SYMBOL", "SPY"))
     lookback_days: int = field(default_factory=lambda: _get_int("LOOKBACK_DAYS", 720))
-    base_interval: str = field(default_factory=lambda: os.getenv("BASE_INTERVAL", "1h"))
-    target_interval: str = field(default_factory=lambda: os.getenv("TARGET_INTERVAL", "1h"))
+    interval: str = "1h"
     cost_bps: float = field(default_factory=lambda: _get_float("COST_BPS", 5.0))
     train_fraction: float = field(default_factory=lambda: _get_float("TRAIN_FRACTION", 0.7))
 
